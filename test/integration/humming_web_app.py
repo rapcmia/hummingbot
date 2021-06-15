@@ -91,7 +91,7 @@ class HummingWebApp:
         :param request: web request
         :return: response in json format, or string, or response itself
         """
-        method, req_path = request.method, request.path
+        method, req_path = request.method, request.raw_path
         req_path = req_path[1:]
         host = req_path[0:req_path.find("/")]
         path = req_path[req_path.find("/"):]
@@ -164,6 +164,7 @@ class HummingWebApp:
         :return: the rerouted url
         """
         a_url = URL(url)
+
         if a_url.host in HummingWebApp._hosts_to_mock and not any(x in a_url.path for x in
                                                                   HummingWebApp._hosts_to_mock[a_url.host]):
             host_path = f"/{a_url.host}{a_url.path}"

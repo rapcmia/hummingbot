@@ -4,10 +4,11 @@ from typing import (
     Any,
     Optional,
 )
-from hummingbot.core.utils.async_utils import safe_gather
 from hummingbot.logger import HummingbotLogger
-from hummingbot.client.settings import ALL_CONNECTORS
+from hummingbot.client.settings import CONNECTOR_SETTINGS, ConnectorType
 import logging
+import asyncio
+import requests
 
 from .async_utils import safe_ensure_future
 
@@ -34,18 +35,26 @@ class TradingPairFetcher:
         safe_ensure_future(self.fetch_all())
 
     async def fetch_all(self):
-        tasks = []
-        fetched_connectors = []
-        for connector_type, connectors in ALL_CONNECTORS.items():
-            if connector_type != "connector":
-                for connector in connectors:
-                    module_name = f"{connector}_api_order_book_data_source"
-                    class_name = "".join([o.capitalize() for o in connector.split("_")]) + "APIOrderBookDataSource"
-                    module_path = f"hummingbot.connector.{connector_type}.{connector}.{module_name}"
-                    module = getattr(importlib.import_module(module_path), class_name)
-                    tasks.append(module.fetch_trading_pairs())
-                    fetched_connectors.append(connector)
+        for conn_setting in CONNECTOR_SETTINGS.values():
+            module_name = f"{conn_setting.base_name()}_connector" if conn_setting.type is ConnectorType.Connector \
+                else f"{conn_setting.base_name()}_api_order_book_data_source"
+            module_path = f"hummingbot.connector.{conn_setting.type.name.lower()}." \
+                          f"{conn_setting.base_name()}.{module_name}"
+            class_name = "".join([o.capitalize() for o in conn_setting.base_name().split("_")]) + \
+                         "APIOrderBookDataSource" if conn_setting.type is not ConnectorType.Connector \
+                         else "".join([o.capitalize() for o in conn_setting.base_name().split("_")]) + "Connector"
+            module = getattr(importlib.import_module(module_path), class_name)
+            args = {}
+            args = conn_setting.add_domain_parameter(args)
+            safe_ensure_future(self.call_fetch_pairs(module.fetch_trading_pairs(**args), conn_setting.name))
 
-        results = await safe_gather(*tasks, return_exceptions=True)
-        self.trading_pairs = dict(zip(fetched_connectors, results))
         self.ready = True
+
+    async def call_fetch_pairs(self, fetch_fn, exchange_name):
+        # In case trading pair fetching returned timeout, using empty list
+        try:
+            self.trading_pairs[exchange_name] = await fetch_fn
+        except (asyncio.TimeoutError, asyncio.CancelledError, requests.exceptions.RequestException):
+            self.logger().error(f"Connector {exchange_name} failed to retrieve its trading pairs. "
+                                f"Trading pairs autocompletion won't work.")
+            self.trading_pairs[exchange_name] = []
